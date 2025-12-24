@@ -80,3 +80,4 @@ def load_bands_and_cams(
         print("y stats: min", float(np.nanmin(y)), "max", float(np.nanmax(y)))
 
     return X, y
+
