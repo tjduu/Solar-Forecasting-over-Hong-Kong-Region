@@ -1,6 +1,22 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+import torch.nn.functional as F
+
+def pad_to_32(x):
+    # x: (B,C,H,W)
+    h, w = x.shape[-2:]
+    new_h = ((h + 31) // 32) * 32
+    new_w = ((w + 31) // 32) * 32
+    pad_h = new_h - h
+    pad_w = new_w - w
+    # pad format: (left, right, top, bottom)
+    x = F.pad(x, (0, pad_w, 0, pad_h), mode="reflect")
+    return x, h, w
+
+def crop_back(x, h, w):
+    return x[..., :h, :w]
+
 
 def plot_full_images_from_loader(model, test_loader, device, ghi_cs_test,
                                  n_samples=10, seed=42):
@@ -13,12 +29,15 @@ def plot_full_images_from_loader(model, test_loader, device, ghi_cs_test,
     with torch.no_grad():
         for xb, yb in test_loader:
             xb = xb.to(device)
-            yb = yb.to(device)
+            yb = yb.to(device).contiguous()
 
-            y_hat = model(xb)
+            xb_crop, h, w=  pad_to_32(xb)
+
+            yb_hat = model(xb_crop)
+            yb_hat = crop_back(yb_hat, h, w).contiguous()
 
             csi_true_list.append(yb.cpu().numpy())
-            csi_pred_list.append(y_hat.cpu().numpy())
+            csi_pred_list.append(yb_hat.cpu().numpy())
 
     # Shapes: (N_test, 1, H, W)
     csi_true = np.concatenate(csi_true_list, axis=0)

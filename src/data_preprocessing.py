@@ -311,7 +311,7 @@ def build_band_tensor_with_elevation(
     # ------------------------------------------------
     bands_npz = np.load(bands_npz_name, allow_pickle=True)
     bandsdata = bands_npz["data"].astype(np.float32)   # (T, B, H, W)
-    bands_t = bands_npz["time_hourly"]
+    bands_t = bands_npz["time_min"]
 
     T, B, H, W = bandsdata.shape
 

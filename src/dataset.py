@@ -213,11 +213,16 @@ class GraphCAMSPtreeDataset(Dataset):
 
 
 class BandsCamsDataset(Dataset):
-    def __init__(self, X, y, channel_mean, channel_std, elev_ch_idx, land_ch_idx):
+    def __init__(self, X, y, channel_min, channel_max, elev_ch_idx, land_ch_idx, eps=1e-6):
         self.X = X
         self.y = y
-        self.mean = torch.from_numpy(channel_mean).view(-1, 1, 1)
-        self.std  = torch.from_numpy(channel_std).view(-1, 1, 1)
+
+        cmin = torch.from_numpy(channel_min).float().view(-1, 1, 1)
+        cmax = torch.from_numpy(channel_max).float().view(-1, 1, 1)
+
+        self.cmin = cmin
+        self.range = (cmax - cmin).clamp_min(eps)
+
         self.elev_ch_idx = elev_ch_idx
         self.land_ch_idx = land_ch_idx
 
@@ -225,16 +230,21 @@ class BandsCamsDataset(Dataset):
         return self.X.shape[0]
 
     def __getitem__(self, idx):
-        x = torch.from_numpy(self.X[idx]).clone()  # (C, H, W)
-        y = torch.from_numpy(self.y[idx])          # (1, H, W)
+        x = torch.from_numpy(self.X[idx]).float()  # (C,H,W)
+        y = torch.from_numpy(self.y[idx]).float()  # (1,H,W) or (H,W)
 
-        # normalize all channels
-        x = (x - self.mean) / self.std
+        # keep raw land mask unchanged
+        land = x[self.land_ch_idx].clone()
 
-        # force sea elevation to 0 after normalization (using land mask)
-        elev_ch = x[self.elev_ch_idx]
-        land_ch = x[self.land_ch_idx]   # 0 sea, 1 land (unchanged)
-        elev_ch = torch.where(land_ch > 0.5, elev_ch, torch.zeros_like(elev_ch))
-        x[self.elev_ch_idx] = elev_ch
+        # min-max scale all channels
+        x = (x - self.cmin) / self.range
+
+        # restore land channel exactly (no scaling)
+        x[self.land_ch_idx] = land
+
+        # force sea elevation to 0 using land mask (still 0/1)
+        elev = x[self.elev_ch_idx]
+        elev = torch.where(land > 0.5, elev, torch.zeros_like(elev))
+        x[self.elev_ch_idx] = elev
 
         return x, y

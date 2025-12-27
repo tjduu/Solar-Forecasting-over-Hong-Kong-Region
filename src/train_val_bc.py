@@ -3,16 +3,35 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+import torch.nn.functional as F
+
+def pad_to_32(x):
+    # x: (B,C,H,W)
+    h, w = x.shape[-2:]
+    new_h = ((h + 31) // 32) * 32
+    new_w = ((w + 31) // 32) * 32
+    pad_h = new_h - h
+    pad_w = new_w - w
+    # pad format: (left, right, top, bottom)
+    x = F.pad(x, (0, pad_w, 0, pad_h), mode="reflect")
+    return x, h, w
+
+def crop_back(x, h, w):
+    return x[..., :h, :w]
+
+
 def train_one_epoch(model, loader, optimizer, criterion, device, max_grad_norm=1.0):
     model.train()
     running_loss = 0.0
 
     for xb, yb in loader:
         xb = xb.to(device)
-        yb = yb.to(device)
+        yb = yb.to(device).contiguous()
 
+        xb_pad, h, w = pad_to_32(xb)
         optimizer.zero_grad()
-        y_hat = model(xb)
+        y_hat = model(xb_pad)
+        y_hat = crop_back(y_hat, h, w).contiguous()
         loss = criterion(y_hat, yb)
         loss.backward()
 
@@ -33,9 +52,12 @@ def evaluate(model, loader, criterion, device):
     with torch.no_grad():
         for xb, yb in loader:
             xb = xb.to(device)
-            yb = yb.to(device)
+            yb = yb.to(device).contiguous()
+            xb_pad, h, w = pad_to_32(xb)
 
-            y_hat = model(xb)
+            y_hat = model(xb_pad)
+            y_hat = crop_back(y_hat,h,w).contiguous()
+
             loss = criterion(y_hat, yb)
             running_loss += loss.item() * xb.size(0)
 
@@ -52,9 +74,10 @@ def evaluate_on_test(model, test_loader, device):
     with torch.no_grad():
         for xb, yb in test_loader:
             xb = xb.to(device)
-            yb = yb.to(device)  # (B, 1, H, W)
-
-            y_hat = model(xb)   # (B, 1, H, W)
+            yb = yb.to(device).contiguous()  # (B, 1, H, W)
+            xb_pad, h, w = pad_to_32(xb)
+            y_hat = model(xb_pad)   # (B, 1, H, W)
+            y_hat = crop_back(y_hat, h, w).contiguous()
 
             # move to CPU and numpy
             y_true_list.append(yb.cpu().numpy())
@@ -116,10 +139,10 @@ def evaluate_csi_and_ghi(model, test_loader, device, ghi_cs_test):
     with torch.no_grad():
         for xb, yb in test_loader:
             xb = xb.to(device)
-            yb = yb.to(device)          # (B, 1, H, W)
-
-            y_hat = model(xb)           # (B, 1, H, W)
-
+            yb = yb.to(device).contiguous()          # (B, 1, H, W)
+            xb_pad, h, w = pad_to_32(xb)
+            y_hat = model(xb_pad)           # (B, 1, H, W)
+            y_hat = crop_back(y_hat, h, w).contiguous()
             y_true_list.append(yb.cpu().numpy())
             y_pred_list.append(y_hat.cpu().numpy())
 

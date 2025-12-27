@@ -5,7 +5,7 @@ def load_bands_and_cams(
     cams_npz_path: str,
     bands_indices_used=None,
     eps: float = 1e-6,
-    clip_csi: tuple | None = (0.0, 2.0),
+    clip_csi: tuple | None = (0.0, 1.0),
     verbose: bool = True,
 ):
     """
