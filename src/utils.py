@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import torch
-
+import torch.nn.functional as F
 EPS = 1e-6
 DEG2RAD = np.pi / 180.0
 EARTH_KM_PER_DEG = 111.32
@@ -52,7 +52,44 @@ def compute_band_stats_from_ptree(ptree_mmap, time_idx, r0,r1,c0,c1, max_frames=
     std[std < EPS] = 1.0
     return {"mean": mean, "std": std}
 
+#---------------crop-------------------
+def pad_to_32(x):
+    # x: (B,C,H,W)
+    h, w = x.shape[-2:]
+    new_h = ((h + 31) // 32) * 32
+    new_w = ((w + 31) // 32) * 32
+    pad_h = new_h - h
+    pad_w = new_w - w
+    # pad format: (left, right, top, bottom)
+    x = F.pad(x, (0, pad_w, 0, pad_h), mode="reflect")
+    return x, h, w
 
+def crop_back(x, h, w):
+    return x[..., :h, :w]
+
+#---------------day+ synethetic night-------------------
+def merge_day_night_on_time(y_true_day, time_day,
+                            y_pred_night, time_night):
+    
+    day_map   = {t: i for i, t in enumerate(time_day)}
+    night_map = {t: i for i, t in enumerate(time_night)}
+
+    all_times = np.array(sorted(set(day_map.keys()) | set(night_map.keys())))
+    T_total   = len(all_times)
+    C, H, W   = y_true_day.shape[1:]
+
+    csi_sorted    = np.full((T_total, C, H, W), np.nan, dtype=np.float32)
+    is_day_sorted = np.zeros(T_total, dtype=bool)
+
+    for k, t in enumerate(all_times):
+        if t in day_map:
+            csi_sorted[k] = y_true_day[day_map[t]]
+            is_day_sorted[k] = True
+        elif t in night_map:
+            csi_sorted[k] = y_pred_night[night_map[t]]
+            is_day_sorted[k] = False
+    all_times = pd.to_datetime(all_times, unit="m", origin="unix")
+    return csi_sorted, all_times, is_day_sorted
 
 def _to_numpy_float32(x):
     if isinstance(x, torch.Tensor):

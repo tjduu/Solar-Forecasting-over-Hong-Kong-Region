@@ -1,23 +1,20 @@
-import copy
 import numpy as np
 import torch
-import torch.nn as nn
 
-import torch.nn.functional as F
+from src.utils import crop_back, pad_to_32
+# def pad_to_32(x):
+#     # x: (B,C,H,W)
+#     h, w = x.shape[-2:]
+#     new_h = ((h + 31) // 32) * 32
+#     new_w = ((w + 31) // 32) * 32
+#     pad_h = new_h - h
+#     pad_w = new_w - w
+#     # pad format: (left, right, top, bottom)
+#     x = F.pad(x, (0, pad_w, 0, pad_h), mode="reflect")
+#     return x, h, w
 
-def pad_to_32(x):
-    # x: (B,C,H,W)
-    h, w = x.shape[-2:]
-    new_h = ((h + 31) // 32) * 32
-    new_w = ((w + 31) // 32) * 32
-    pad_h = new_h - h
-    pad_w = new_w - w
-    # pad format: (left, right, top, bottom)
-    x = F.pad(x, (0, pad_w, 0, pad_h), mode="reflect")
-    return x, h, w
-
-def crop_back(x, h, w):
-    return x[..., :h, :w]
+# def crop_back(x, h, w):
+#     return x[..., :h, :w]
 
 
 def train_one_epoch(model, loader, optimizer, criterion, device, scheduler=None, max_grad_norm=1.0):

@@ -2,21 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
-
-def pad_to_32(x):
-    # x: (B,C,H,W)
-    h, w = x.shape[-2:]
-    new_h = ((h + 31) // 32) * 32
-    new_w = ((w + 31) // 32) * 32
-    pad_h = new_h - h
-    pad_w = new_w - w
-    # pad format: (left, right, top, bottom)
-    x = F.pad(x, (0, pad_w, 0, pad_h), mode="reflect")
-    return x, h, w
-
-def crop_back(x, h, w):
-    return x[..., :h, :w]
-
+from src.utils import crop_back, pad_to_32
 
 def plot_full_images_from_loader(model, test_loader, device, ghi_cs_test,
                                  n_samples=10, seed=42):
@@ -79,3 +65,73 @@ def plot_full_images_from_loader(model, test_loader, device, ghi_cs_test,
 
         plt.tight_layout()
         plt.show()
+
+def plot_csi_sorted_sequence_exact(
+    csi_sorted,
+    time_sorted,
+    is_day_sorted,
+    start_idx=0,
+    num_steps=24,
+    cols=6,
+):
+    """
+    Continuous CSI sequence (chronological):
+      - is_day_sorted[i] == True  -> DAY (truth)
+      - is_day_sorted[i] == False -> NIGHT (synthetic)
+
+    For EACH subplot:
+      - vmin = actual min of that frame
+      - vmax = actual max of that frame
+      - colorbar ticks forced to show vmin and vmax
+    """
+
+    T_total, C, H, W = csi_sorted.shape
+    assert C == 1
+
+    end_idx = min(start_idx + num_steps, T_total)
+    frames  = end_idx - start_idx
+    if frames <= 0:
+        raise ValueError("Empty range; check start_idx/num_steps")
+
+    idxs = np.arange(start_idx, end_idx)
+
+    rows = int(np.ceil(frames / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(3.0 * cols, 3.0 * rows))
+    axes = np.atleast_2d(axes)
+
+    for i in range(frames):
+        idx = idxs[i]
+        r = i // cols
+        c = i % cols
+        ax = axes[r, c]
+
+        frame = csi_sorted[idx, 0]
+        vmin = float(np.nanmin(frame))
+        vmax = float(np.nanmax(frame))
+
+        im = ax.imshow(frame, cmap="viridis_r", vmin=vmin, vmax=vmax)
+
+        tag = "DAY (truth)" if is_day_sorted[idx] else "NIGHT (synthetic)"
+        ax.set_title(f"{time_sorted[idx]}\n{tag}", fontsize=7)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+        # colorbar with explicit min/max ticks
+        cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+        cb.set_label("CSI", fontsize=6)
+
+        # show exact vmin/vmax on the bar
+        ticks = np.linspace(vmin, vmax, 5)
+        cb.set_ticks(ticks)
+        cb.set_ticklabels([f"{t:.2f}" for t in ticks])
+
+    # hide unused axes
+    for j in range(frames, rows * cols):
+        axes[j // cols, j % cols].axis("off")
+
+    fig.suptitle(
+        f"CSI day+night sorted sequence (idx {start_idx}–{end_idx-1})",
+        fontsize=12
+    )
+    plt.tight_layout()
+    plt.show()
