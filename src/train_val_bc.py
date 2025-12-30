@@ -20,7 +20,7 @@ def crop_back(x, h, w):
     return x[..., :h, :w]
 
 
-def train_one_epoch(model, loader, optimizer, criterion, device, max_grad_norm=1.0):
+def train_one_epoch(model, loader, optimizer, criterion, device, scheduler=None, max_grad_norm=1.0):
     model.train()
     running_loss = 0.0
 
@@ -28,18 +28,26 @@ def train_one_epoch(model, loader, optimizer, criterion, device, max_grad_norm=1
         xb = xb.to(device)
         yb = yb.to(device).contiguous()
 
+        # Assuming pad_to_32 and crop_back are defined globally or passed in
         xb_pad, h, w = pad_to_32(xb)
+        
         optimizer.zero_grad()
         y_hat = model(xb_pad)
         y_hat = crop_back(y_hat, h, w).contiguous()
+        
         loss = criterion(y_hat, yb)
         loss.backward()
 
-        # gradient clipping
+        # Gradient clipping to prevent exploding gradients in Transformers
         if max_grad_norm is not None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
 
         optimizer.step()
+        
+        # Update learning rate per batch
+        if scheduler is not None:
+            scheduler.step()
+            
         running_loss += loss.item() * xb.size(0)
 
     return running_loss / len(loader.dataset)
