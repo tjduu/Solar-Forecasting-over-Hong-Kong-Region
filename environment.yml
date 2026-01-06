@@ -1,0 +1,20 @@
+name: solar-forecasting-hk
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy>=1.23
+  - pandas>=1.5
+  - matplotlib>=3.7
+  - scikit-learn>=1.2
+  - pvlib>=0.10
+  - xarray>=2023.1
+  - gdal>=3.6
+  - pip
+  - pip:
+      - torch>=2.1
+      - torchvision>=0.16
+      - kornia>=0.7
+      - segmentation-models-pytorch>=0.3

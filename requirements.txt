@@ -1,0 +1,14 @@
+name: solar-forecasting
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - scikit-learn
+  - matplotlib
+  - pvlib
+  - pytorch
+  - pip
