@@ -51,9 +51,6 @@ def build_combined_npz(root="2kmhk", out="combined_15ch.npz"):
     return out
 
 
-
-import numpy as np
-
 def _center_soz(soz: np.ndarray) -> np.ndarray:
     # soz: (T, H, W) -> (T,)
     h = soz.shape[1] // 2

@@ -40,13 +40,13 @@ def plot_full_images_from_loader(model, test_loader, device, ghi_cs_test,
         fig, axes = plt.subplots(2, 2, figsize=(8, 8))
 
         # --- CSI TRUE ---
-        im = axes[0,0].imshow(csi_true[idx, 0], cmap='viridis')
+        im = axes[0,0].imshow(csi_true[idx, 0], cmap='viridis_r')
         axes[0,0].set_title(f"CSI TRUE (sample {idx})")
         axes[0,0].axis('off')
         fig.colorbar(im, ax=axes[0,0], fraction=0.046, pad=0.04)
 
         # --- CSI PRED ---
-        im = axes[0,1].imshow(csi_pred[idx, 0], cmap='viridis')
+        im = axes[0,1].imshow(csi_pred[idx, 0], cmap='viridis_r')
         axes[0,1].set_title(f"CSI PRED (sample {idx})")
         axes[0,1].axis('off')
         fig.colorbar(im, ax=axes[0,1], fraction=0.046, pad=0.04)
