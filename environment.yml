@@ -18,3 +18,4 @@ dependencies:
       - torchvision>=0.16
       - kornia>=0.7
       - segmentation-models-pytorch>=0.3
+      - cdsapi
