@@ -1,12 +1,14 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
-
+import pandas as pd
 from typing import Optional, Dict
 from .train import forward_batch, reduce_metrics 
-
+#import DAtaset
+from torch.utils.data import Dataset
 # reuse the forward function from the training module
 from .train import forward_batch
+from src.utils import pad_to_32, crop_back
 
 @torch.no_grad()
 def evaluate_model(model, loader, device=None, ckpt_path=None, round_to=None, return_arrays=False):
@@ -564,3 +566,50 @@ class GraphCAMSPtreeDatasetARMin(Dataset):
                 "feature_names": self.feature_names
             }
         }
+
+
+@torch.no_grad()
+def rmse_by_time_bucket(model, test_loader, device, time_mins, idx_test):
+    model.eval()
+    time_test = np.asarray(time_mins)[np.asarray(idx_test)]  # unix minutes UTC
+
+    # collect preds/truth in dataset order
+    y_true_list, y_pred_list = [], []
+    for xb, yb in test_loader:
+        xb = xb.to(device)
+        yb = yb.to(device).contiguous()
+        xb_pad, h, w = pad_to_32(xb)
+        y_hat = model(xb_pad)
+        y_hat = crop_back(y_hat, h, w).contiguous()
+        y_true_list.append(yb.cpu().numpy())
+        y_pred_list.append(y_hat.cpu().numpy())
+
+    y_true = np.concatenate(y_true_list, 0).astype(np.float64)
+    y_pred = np.concatenate(y_pred_list, 0).astype(np.float64)
+
+    # convert to HKT minutes-of-day
+    tod_hkt = (time_test + 8*60) % 1440  # HKT = UTC+8
+    # define buckets (adjust if you want)
+    buckets = {
+        "night(00-05)": (0, 300),
+        "morning(05-08)": (300, 480),
+        "day(08-16)": (480, 960),
+        "evening(16-19)": (960, 1140),
+        "twilight/late(19-24)": (1140, 1440),
+    }
+
+    report = {}
+    err = (y_pred - y_true)
+    se  = err**2
+
+    for name, (a,b) in buckets.items():
+        m = (tod_hkt >= a) & (tod_hkt < b)
+        if m.sum() == 0:
+            report[name] = None
+            continue
+        rmse = float(np.sqrt(np.mean(se[m])))
+        mae  = float(np.mean(np.abs(err[m])))
+        mbe  = float(np.mean(err[m]))
+        report[name] = {"N": int(m.sum()), "RMSE": rmse, "MAE": mae, "MBE": mbe}
+
+    return report

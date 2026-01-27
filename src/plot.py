@@ -15,11 +15,11 @@ def plot_full_images_from_loader(model, test_loader, device, ghi_cs_test,
     with torch.no_grad():
         for xb, yb in test_loader:
             xb = xb.to(device)
-            yb = yb.to(device).contiguous()
+            yb= yb.to(device).contiguous()
 
             xb_crop, h, w=  pad_to_32(xb)
-
-            yb_hat = model(xb_crop)
+            out= model(xb_crop)
+            yb_hat = out[0] if isinstance(out, (tuple, list)) else out
             yb_hat = crop_back(yb_hat, h, w).contiguous()
 
             csi_true_list.append(yb.cpu().numpy())
@@ -409,14 +409,10 @@ def plot_rmse_extremes_with_time_and_ghi(
         for xb, yb in test_loader:
             xb = xb.to(device)
             yb = yb.to(device).contiguous()
-
             xb_pad, h, w = pad_to_32(xb)
-            y_hat = model(xb_pad)
+            out = model(xb_pad)   # (B, 1, H, W)
+            y_hat = out[0] if isinstance(out, (tuple, list)) else out
             y_hat = crop_back(y_hat, h, w).contiguous()
-
-            # If your model outputs logits, uncomment:
-            # y_hat = torch.sigmoid(y_hat)
-
             csi_true_list.append(yb.cpu().numpy())
             csi_pred_list.append(y_hat.cpu().numpy())
 

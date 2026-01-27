@@ -52,7 +52,7 @@ def train_one_epoch_gate(model, loader, optimizer, criterion, device, scheduler=
         y_hat,g = model(xb_pad)
         y_hat = crop_back(y_hat, h, w).contiguous()
         
-        loss = criterion(y_hat, yb)
+        loss = criterion(y_hat, yb) + 0.001*(g.mean()-0.5)**2  # add gate regularization
         loss.backward()
 
         # Gradient clipping to prevent exploding gradients in Transformers
@@ -68,6 +68,35 @@ def train_one_epoch_gate(model, loader, optimizer, criterion, device, scheduler=
         running_loss += loss.item() * xb.size(0)
 
     return running_loss / len(loader.dataset)
+
+@torch.no_grad()
+def evaluate_moe(model, loader, criterion, device):
+    model.eval()
+    running_loss = 0.0
+
+    sum_sqerr = 0.0   # sum of squared error over all pixels
+    n_pix = 0         # number of pixels
+
+    for xb, yb in loader:
+        xb = xb.to(device)
+        yb = yb.to(device).contiguous()
+        xb_pad, h, w = pad_to_32(xb)
+
+        y_hat, g = model(xb_pad)
+        y_hat = crop_back(y_hat, h, w).contiguous()
+
+        # criterion loss (your combined_loss)
+        loss = criterion(y_hat, yb)
+        running_loss += loss.item() * xb.size(0)
+
+        # RMSE over pixels
+        diff = (y_hat - yb)
+        sum_sqerr += diff.pow(2).sum().item()
+        n_pix += diff.numel()
+
+    avg_loss = running_loss / len(loader.dataset)
+    rmse = (sum_sqerr / max(n_pix, 1)) ** 0.5
+    return avg_loss, rmse
 
 @torch.no_grad()
 def evaluate(model, loader, criterion, device):
@@ -109,8 +138,74 @@ def evaluate_on_test(model, test_loader, device):
         for xb, yb in test_loader:
             xb = xb.to(device)
             yb = yb.to(device).contiguous()  # (B, 1, H, W)
+            xb_pad, h, w = pad_to_32(xb)            
+            out = model(xb_pad)   # (B, 1, H, W)
+            y_hat = out[0] if isinstance(out, (tuple, list)) else out
+            
+            y_hat = crop_back(y_hat, h, w).contiguous()
+
+            # move to CPU and numpy
+            y_true_list.append(yb.cpu().numpy())
+            y_pred_list.append(y_hat.cpu().numpy())
+
+    # stack: (N_batches*B, 1, H, W)
+    y_true = np.concatenate(y_true_list, axis=0)
+    y_pred = np.concatenate(y_pred_list, axis=0)
+
+    # flatten all pixels
+    y_true = y_true.reshape(-1)
+    y_pred = y_pred.reshape(-1)
+
+    # Safety: remove any NaNs/Infs just in case
+    mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    y_true = y_true[mask]
+    y_pred = y_pred[mask]
+
+    # --- metrics ---
+
+    # errors
+    err  = y_pred - y_true
+    abs_err = np.abs(err)
+
+    # MBE
+    mbe = np.mean(err)
+
+    # MAE
+    mae = np.mean(abs_err)
+
+    # RMSE
+    rmse = np.sqrt(np.mean(err**2))
+
+    # relative RMSE (relative to mean observed CSI)
+    mean_true = np.mean(y_true)
+    rrmse = rmse / mean_true if mean_true != 0 else np.nan
+
+    # R²
+    ss_res = np.sum(err**2)
+    ss_tot = np.sum((y_true - mean_true)**2)
+    r2 = 1.0 - ss_res / ss_tot if ss_tot != 0 else np.nan
+
+    metrics = {
+        "RMSE": float(rmse),
+        "rRMSE": float(rrmse),
+        "R2": float(r2),
+        "MBE": float(mbe),
+        "MAE": float(mae),
+        "mean_true": float(mean_true),
+    }
+    return metrics
+
+def evaluate_on_test_moe(model, test_loader, device):
+    model.eval()
+    y_true_list = []
+    y_pred_list = []
+
+    with torch.no_grad():
+        for xb, yb in test_loader:
+            xb = xb.to(device)
+            yb = yb.to(device).contiguous()  # (B, 1, H, W)
             xb_pad, h, w = pad_to_32(xb)
-            y_hat = model(xb_pad)   # (B, 1, H, W)
+            y_hat, _= model(xb_pad)   # (B, 1, H, W)
             y_hat = crop_back(y_hat, h, w).contiguous()
 
             # move to CPU and numpy
@@ -175,7 +270,9 @@ def evaluate_csi_and_ghi(model, test_loader, device, ghi_cs_test):
             xb = xb.to(device)
             yb = yb.to(device).contiguous()          # (B, 1, H, W)
             xb_pad, h, w = pad_to_32(xb)
-            y_hat = model(xb_pad)           # (B, 1, H, W)
+            out = model(xb_pad)   # (B, 1, H, W)
+            y_hat = out[0] if isinstance(out, (tuple, list)) else out
+            y_hat = crop_back(y_hat, h, w).contiguous()
             y_hat = crop_back(y_hat, h, w).contiguous()
             y_true_list.append(yb.cpu().numpy())
             y_pred_list.append(y_hat.cpu().numpy())
