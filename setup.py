@@ -3,9 +3,9 @@ from setuptools import setup, find_packages
 setup(
     name="solar-forecasting-hk",
     version="0.1.0",
-    description="Solar forecasting pipeline using the Gated Unified Model (GUM)",
-    author="Your Name",
-    packages=find_packages(),  # Automatically finds your 'src' folder as a package
+    description="Solar forecasting framework using Geo-conditional U-Net Mixture-of-Experts (GUM) for the Hong Kong region.",
+    author="Tianju(Tim) Du",
+    packages=find_packages(), 
     python_requires=">=3.10",
     install_requires=[
         "numpy>=1.23",
