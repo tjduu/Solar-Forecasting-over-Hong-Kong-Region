@@ -1,23 +1,31 @@
-
 import os
 import glob
 import numpy as np
 import pandas as pd
 from datetime import datetime
 
+# Names of the bands we kept from Himawari-8/9
 LBANDS = [
-    "tbb_07","tbb_08","tbb_09","tbb_10","tbb_11","tbb_12","tbb_13","tbb_14","tbb_15","tbb_16",
-    "SAA","SAZ","sd_albedo_03","SOA","SOZ"
+    "tbb_07", "tbb_08", "tbb_09", "tbb_10", "tbb_11", "tbb_12", "tbb_13", "tbb_14", "tbb_15", "tbb_16",
+    "SAA", "SAZ", "sd_albedo_03", "SOA", "SOZ"
 ]
 SOZ_IDX = LBANDS.index("SOZ")
 EPOCH = datetime(1970, 1, 1)
 
+
 def _parse_time_from_name(path):
     """
-    Works for:
-      20210101_0000.npy
-      H09_20221231_2330.npy
-    Returns minutes since Unix epoch (int).
+    Extracts the timestamp from a standard Himawari filename.
+    
+    Works for formats like:
+      - 20210101_0000.npy
+      - H09_20221231_2330.npy
+
+    Args:
+        path (str): The file path or filename to parse.
+
+    Returns:
+        int: Minutes since the Unix epoch.
     """
     base = os.path.splitext(os.path.basename(path))[0]
     parts = base.split("_")
@@ -28,6 +36,20 @@ def _parse_time_from_name(path):
 
 
 def build_combined_npz(root="2kmhk", out="combined_15ch.npz"):
+    """
+    Reads all .npy files under root (recursively), extracts time from 
+    the filename, and stacks them into a single compressed .npz archive.
+
+    Args:
+        root (str): The root directory to search for .npy files.
+        out (str): The output path for the combined .npz file.
+
+    Returns:
+        str: The path to the generated .npz file.
+
+    Raises:
+        RuntimeError: If no .npy files are found in the root directory.
+    """
     files = glob.glob(os.path.join(root, "**", "*.npy"), recursive=True)
     if not files:
         raise RuntimeError("No npy files found")
@@ -46,12 +68,21 @@ def build_combined_npz(root="2kmhk", out="combined_15ch.npz"):
 
     data = np.stack(data_list, axis=0)          # (T, 15, H, W)
     time_min = np.array(times_min, dtype="int64")  # (T,)
-
     np.savez(out, data=data, time_min=time_min)
+    
     return out
 
 
 def _center_soz(soz: np.ndarray) -> np.ndarray:
+    """
+    Extracts the center pixel value from a sequence of Solar Zenith Angle (SOZ) maps.
+
+    Args:
+        soz (np.ndarray): Array of shape (T, H, W).
+
+    Returns:
+        np.ndarray: 1D array of shape (T,) containing center values.
+    """
     # soz: (T, H, W) -> (T,)
     h = soz.shape[1] // 2
     w = soz.shape[2] // 2
@@ -66,6 +97,22 @@ def _classify_frames_by_center_soz(
     night_thresh: float,
     twilight: str,      # "drop" | "day" | "night" | "both"
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Classifies frames into day/night based on the center Solar Zenith Angle.
+
+    Args:
+        data (np.ndarray): Input data of shape (T, C, H, W).
+        soz_idx (int): Channel index for the SOZ band.
+        day_thresh (float): Threshold angle for daytime classification.
+        night_thresh (float): Threshold angle for nighttime classification.
+        twilight (str): Strategy for twilight handling ("drop", "day", "night", or "both").
+
+    Returns:
+        tuple: (day_data, night_data, is_day_mask, is_night_mask)
+
+    Raises:
+        ValueError: If an invalid `twilight` strategy is provided.
+    """
     soz = data[:, soz_idx, :, :]         # (T,H,W)
     soz_c = _center_soz(soz)             # (T,)
 
@@ -99,6 +146,18 @@ def _drop_all_nan_timesteps(
     print_dropped: bool = True,
     label: str = "",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Filters out timesteps where the data consists entirely of NaNs.
+
+    Args:
+        data (np.ndarray): Data array to filter.
+        time_min (np.ndarray): Corresponding time array.
+        print_dropped (bool): Whether to print information about dropped steps.
+        label (str): Optional label for the print statement.
+
+    Returns:
+        tuple: (filtered_data, filtered_time, dropped_times)
+    """
     keep = np.isfinite(data).any(axis=(1, 2, 3))
     dropped_times = time_min[~keep]
 
@@ -120,13 +179,27 @@ def split_day_night_npz(
     twilight: str = "drop",
     drop_nan_timesteps: bool = True,
 ) -> None:
+    """
+    Loads combined .npz data, sanitizes minimums to NaNs, and splits 
+    the dataset into separate day and night .npz archives.
+
+    Args:
+        in_path (str): Path to the input combined .npz file.
+        out_day_path (str): Output path for daytime data.
+        out_night_path (str): Output path for nighttime data.
+        atol (float): Absolute tolerance for defining global minimums.
+        day_thresh (float): SOZ threshold for daytime.
+        night_thresh (float): SOZ threshold for nighttime.
+        twilight (str): Strategy for twilight ("drop", "day", "night", "both").
+        drop_nan_timesteps (bool): Flag to remove all-NaN timesteps post-split.
+    """
     z = np.load(in_path)
     data = z["data"].astype(np.float32)
     time_min = z["time_min"].astype(np.int64, copy=False)
-
+    
     global_min = float(np.nanmin(data))
     data[np.isclose(data, global_min, atol=atol)] = np.nan
-
+    
     day_data, night_data, is_day, is_night = _classify_frames_by_center_soz(
         data,
         soz_idx=SOZ_IDX,
@@ -153,6 +226,15 @@ def print_random_time_matches(
     n: int = 20,
     seed: int | None = None,
 ):
+    """
+    Prints a random subset of paired timestamps to verify alignment.
+
+    Args:
+        paired_bands_time_min (np.ndarray): Paired band times in minutes.
+        paired_cams_time_min (np.ndarray): Paired CAMS times in minutes.
+        n (int): Number of samples to print.
+        seed (int | None): Random seed for reproducibility.
+    """
     t_b = np.asarray(paired_bands_time_min).astype(np.int64, copy=False)
     t_c = np.asarray(paired_cams_time_min).astype(np.int64, copy=False)
 
@@ -172,7 +254,18 @@ def print_random_time_matches(
     for i in range(k):
         print(f"{i:02d}  bands={b_dt[i]}  cams={c_dt[i]}  |Δ|={int(dmin[i])} min")
 
+
 def filter_cams_30min(cams_data: np.ndarray, cams_time_min: np.ndarray):
+    """
+    Filters CAMS data to strictly 30-minute intervals.
+
+    Args:
+        cams_data (np.ndarray): Original CAMS data array.
+        cams_time_min (np.ndarray): Original CAMS time array.
+
+    Returns:
+        tuple: (Filtered CAMS data array, Filtered CAMS time array)
+    """
     cams_time_min = np.asarray(cams_time_min).astype(np.int64, copy=False)
     keep = (cams_time_min % 30) == 0
     return cams_data[keep], cams_time_min[keep]
@@ -188,8 +281,24 @@ def pair_and_save_cams_bands(
     verbose: bool = True,
     filter_cams: bool = False
 ):
+    """
+    Aligns satellite bands and CAMS datasets temporally using a fuzzy matching approach.
+
+    Args:
+        bands_npz_path (str): Path to the processed bands .npz file.
+        cams_npz_path (str): Path to the processed CAMS .npz file.
+        out_cams_npz_path (str): Output path for aligned CAMS data.
+        out_bands_npz_path (str): Output path for aligned bands data.
+        tol_min (int): Maximum allowable temporal difference (in minutes) for a match.
+        one_to_one (bool): If True, ensures a CAMS sample is not matched to multiple bands.
+        verbose (bool): If True, prints status and alignment statistics.
+        filter_cams (bool): If True, pre-filters CAMS data to 30-minute intervals.
+
+    Returns:
+        dict: Dictionary containing match statistics ('n_matched' and 'max_abs_dt_min').
+    """
     bands = np.load(bands_npz_path)
-    bands_data = bands["data"].astype(np.float32, copy=False)      # (Tb, Cb, H, W)
+    bands_data = bands["data"].astype(np.float32, copy=False)        # (Tb, Cb, H, W)
     bands_time_min = bands["time_min"].astype(np.int64, copy=False)  # minutes since epoch
 
     cams = np.load(cams_npz_path)
@@ -232,6 +341,7 @@ def pair_and_save_cams_bands(
             if ci not in used:
                 used.add(ci)
                 keep.append(k)
+        
         keep = np.array(keep, dtype=np.int64)
         b_idx = b_idx[keep]
         c_idx_s = c_idx_s[keep]
@@ -239,11 +349,10 @@ def pair_and_save_cams_bands(
 
     paired_bands = bands_data[b_idx]
     paired_bands_time_min = bands_time_min[b_idx]
-    
-
     paired_cams = cams_data_s[c_idx_s]
     paired_cams_time_min = cams_time_s[c_idx_s]
     paired_cams_time_dt64m = paired_cams_time_min.astype("datetime64[m]")
+    
     print_random_time_matches(paired_bands_time_min, paired_cams_time_min, n=20, seed=0)
     
     if verbose:
@@ -258,6 +367,7 @@ def pair_and_save_cams_bands(
         time_min=paired_bands_time_min,
         bands=bands.get("bands", None),
     )
+    
     np.savez_compressed(
         out_cams_npz_path,
         data=paired_cams,
