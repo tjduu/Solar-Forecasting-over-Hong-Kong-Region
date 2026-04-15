@@ -1,49 +1,129 @@
-# Solar-Forecasting-over-Hong-Kong-Region
-This is the repo for spatial-temporal solar forecasting over Hong Kong region, including data download, data preprocessing, model training, and model prediction.
+# Advancing Day-Ahead Spatiotemporal Solar Irradiance Forecasting through Synthetic Nighttime Data Integration
 
-## Environment setup
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?style=flat&logo=PyTorch&logoColor=white)](https://pytorch.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Pick **one** workflow:
+> **Official Repository** for the paper: *"Advancing Day-Ahead Spatiotemporal Solar Irradiance Forecasting through Synthetic Nighttime Data Integration"*.
 
-**Conda (recommended)**
+## 📖 Overview & Motivation
+
+While deep learning architectures have significantly advanced intra-day solar forecasting, extending their spatiotemporal predictive skill to day-ahead (24-hour) horizons remains a critical bottleneck. A major cause of this performance degradation is the **nighttime observation void**. Because solar irradiance naturally drops to zero at night, standard data-driven models lose active tracking of cloud kinematics for over 10 hours. Consequently, early-morning predictions are severely compromised, forcing models to infer current cloud kinematics from stale data recorded prior to the previous sunset.
+
+To resolve this challenge, we propose a continuity-aware framework based on a **Geo-conditioned U-Net Mixture-of-Experts (GUM)**. 
+
+Our framework generates physically consistent synthetic nighttime Clear Sky Index (CSI) time series from geostationary satellite observations (Himawari-8/9) and reconstructs a seamless 24-hour CSI representation. Benchmarking over Hong Kong (2021–2023) demonstrates that bridging this diurnal gap yields consistent performance gains across architectures, **reducing GHI forecasting errors by 2.1% to 26.4%** and elevating forecasting skill over persistence from 13.71% to 20.45%.
+
+<div align="center">
+  <img src="image/framework.pdf" alt="GUM Framework Architecture" width="800"/>
+  <p><i>Figure 1: Overview of the Geo-conditioned U-Net Mixture-of-Experts (GUM) framework for generating continuous 24/7 CSI tracking. (Note: Add your diagram to a `docs/` folder)</i></p>
+</div>
+
+> **Note on Scope:** This repository focuses strictly on the core contribution of the paper: **Data preparation, GUM model training, and Synthetic Nighttime CSI generation**. The downstream sequence-to-sequence forecasting models used for benchmarking in the paper are standard baseline architectures and are omitted here to keep the repository focused on the novel continuous-tracking framework.
+
+---
+
+## 📂 Repository Structure
+
+The repository is structured to facilitate easy reproduction of our pipeline. All core logic resides in `src/`, while step-by-step interactive demonstrations are provided in the `tutorial/` directory.
+
+```text
+├── src/                        # Core Python modules for the GUM pipeline
+│   ├── __init__.py             # Package initializer
+│   ├── bands_and_cams.py       # Handlers for loading and pairing Himawari & CAMS data
+│   ├── data_preprocessing.py   # Feature extraction, geographic alignment, and tensor building
+│   ├── dataset.py              # PyTorch Dataset definitions (e.g., BandsCamsDataset)
+│   ├── evaluate.py             # Metrics computation (RMSE, rRMSE, MAE, MBE,)
+│   ├── loss.py                 # Custom loss functions (e.g., MoE balance loss)
+│   ├── model.py                # Model architectures (Geo-conditioned U-Net MoE)
+│   ├── plot.py                 # Visualization tools for CSI/GHI spatial and sequence plots
+│   ├── train.py                # Training loops, learning rate scheduling, and checkpoints
+│   └── utils.py                # Helper functions (tensor padding, cropping, day/night splits)
+│
+├── tutorial/                   # Interactive notebooks demonstrating the pipeline
+│   ├── 1_prepare_raw_data.ipynb
+│   ├── 2_Train_Eval_Model(pub).ipynb
+│   └── 3_synethic_tracks(pub).ipynb
+│
+├── Data/                       # Project datasets and model outputs (Ignored in Git)
+│   ├── CAMS/                   # Copernicus Atmosphere Monitoring Service irradiance data
+│   ├── bands/                  # Processed Himawari-8/9 satellite tensors
+│   ├── elevation/              # Static geographic features (e.g., HK DEM/elevation maps)
+│   ├── grid/                   # Himawari-8/9 longitude and latitude grid mappings
+│   └── syntheticCSI/           # Generated continuous synthetic nighttime CSI tracking arrays
+│
+├── .gitignore                  # Git ignore rules (excludes .venv, Data/, Model_checkpoint/)
+├── environment.yml             # Conda environment configuration
+├── requirements.txt            # Pip requirements
+├── setup.py                    # Local package installer for the 'src' module
+└── README.md                   # Project documentation
+```
+
+---
+
+## ⚙️ Environment Setup
+
+To ensure the `tutorial` notebooks can seamlessly import the `src` modules regardless of your working directory, the repository is configured to be installed as a local package.
+
+Pick **one** of the following workflow environments:
+
+### Option A: Conda (Recommended)
 ```bash
-mamba env create -f environment.yml   # or conda env create ...
+# 1. Create and activate the environment
+mamba env create -f environment.yml   # (or use conda env create)
 mamba activate solar-forecasting-hk
+
+# 2. Install the local project in editable mode
+pip install -e .
 ```
 
-**Pip/virtualenv**
+### Option B: Pip / Virtualenv (For Linux Servers without Conda)
 ```bash
-python -m venv .venv
+# 1. Create and activate virtual environment (bypassing system pip limits if necessary)
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+
+# 2. Upgrade pip and install dependencies/local project
+pip install --upgrade pip
+pip install -e .
 ```
 
-## Data preparation (high level)
-1. Download PTREE/crops and CAMS datasets into `Data/`.
-2. Use `src/data_preprocessing.py` helpers or the notebooks (`prepare_raw_data.ipynb`, `Prepare_Train_data.ipynb`) to:
-   - match CAMS to PTREE timestamps,
-   - build band/elevation tensors and CSI targets (`Data/output/*.npz`).
+---
 
-## Training
+## 🚀 Pipeline Tutorials
 
-*CNNUNet/Twin (image-to-image)*
-```python
-from torch.utils.data import DataLoader
-from src.dataset import BandsCamsDataset
-from src.model_Twin import TwinFiLMUNetTiny
-from src.train_val_bc import train_one_epoch, evaluate
+The workflow is broken down into three sequential Jupyter Notebooks located in the `Tutorial Notebooks/` folder. We recommend running them in the following order to reproduce the paper's methodology:
 
-ds = BandsCamsDataset(X, y, channel_min, channel_max, elev_ch_idx, land_ch_idx)
-ldr = DataLoader(ds, batch_size=4, shuffle=True)
-model = TwinFiLMUNetTiny().cuda()
-# run train_one_epoch/evaluate loops as in the notebooks
-```
+### 1. Data Preparation & Pairing
+**Notebook:** `tutorial/1.prepare_raw_data.ipynb`
+* Processes raw Himawari-8/9 Long-wave Infrared (LWIR) files.
+* Segments the observations by diurnal cycles (separating strict daytime from nighttime/twilight).
+* Temporally aligns the satellite bands with ground-truth CAMS irradiance data using a robust 6-minute fuzzy matching algorithm.
 
-## Evaluation & visualization
-- Use `src/evaluate.py` for metrics (`evaluate_model`, `evaluate_daytime`) and sequence plots (`plot_sequence`).
-- Use `src/plot.py` for full-image CSI/GHI visualization and merged day/night sequences.
+### 2. GUM Model Training & Evaluation
+**Notebook:** `tutorial/2.Train_Eval_Model(pub).ipynb`
+* Assembles the multi-channel input tensors (combining atmospheric bands with geographic elevation maps).
+* Performs a chronologically stratified Train/Val/Test split.
+* Trains the **Geo-conditioned U-Net Mixture-of-Experts (GUM)** using the daytime dataset to learn the mapping between cloud kinematics and ground irradiance.
+* Evaluates the model comprehensively, generating standard metrics (RMSE, rRMSE, MAE, MBE, R²) partitioned by sky conditions and time-of-day.
 
-## Notebooks
-- `Train_Model.ipynb`, `Prepare_Train_data.ipynb`: end-to-end training flows for CNN models.
-- `prepare_raw_data.ipynb`: data pairing and preprocessing.
-- `test_location_consistency.ipynb`: location sanity checks.
+### 3. Synthetic Nighttime Track Generation
+**Notebook:** `tutorial/3.synethic_tracks(pub).ipynb`
+* Loads the trained GUM checkpoint and applies it in inference mode across the nocturnal and twilight satellite observations.
+* Dynamically crops and processes the outputs to generate synthetic nighttime Clear Sky Index (CSI) tensors.
+* Integrates the predicted nighttime arrays with the true daytime arrays, yielding a seamless, temporally aligned, 24-hour continuous tracking dataset ready for downstream forecasting models.
+
+---
+
+## 📊 Key Findings
+
+By successfully mitigating the nocturnal observation void, the synthetic nighttime data integration framework achieves:
+* **Enhanced Spatial Continuity:** Seamless transitions between evening decay and early-morning initialization.
+* **Significant Error Reduction:** Downstream GHI forecasting errors reduced by **2.1% to 26.4%** across tested deep-learning and physics-based baselines.
+* **Superior Early-Morning Tracking:** Elevates global forecasting skill over persistence from **13.71% to 20.45%** across a 16-grid benchmark domain.
+
+---
+
+
+## 📄 License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
