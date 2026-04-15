@@ -123,7 +123,3 @@ By successfully mitigating the nocturnal observation void, the synthetic nightti
 * **Superior Early-Morning Tracking:** Elevates global forecasting skill over persistence from **13.71% to 20.45%** across a 16-grid benchmark domain.
 
 ---
-
-
-## 📄 License
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
