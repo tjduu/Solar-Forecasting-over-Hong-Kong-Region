@@ -9,7 +9,7 @@ def load_bands_and_cams(
     verbose: bool = True,
 ):
     """
-    Load satellite bands (with or without elevation/mask) and CAMS, and build:
+    Load satellite bands and CAMS, and build:
       X: (T, C, H, W)
       y: (T, 1, H, W)  # CSI
 

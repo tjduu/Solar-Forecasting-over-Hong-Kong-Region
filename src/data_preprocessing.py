@@ -1,9 +1,10 @@
 # src/data_preprocessing.py
 from __future__ import annotations
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple, Optional,List
 import numpy as np
 import pandas as pd
+
 
 try:
     from .utils import to_utc_index  # expects Series/DataFrame to tz-aware UTC index/series
@@ -61,7 +62,6 @@ def build_grid_mapping(df):
 
     H, W = len(lats), len(lons)
     return df, (H, W)
-
 
 
 def compute_csi(
@@ -257,12 +257,6 @@ def strict_time_space_filter(cams_df: pd.DataFrame,
     lon_min, lon_max = lon_bounds; lat_min, lat_max = lat_bounds
     in_space = df["lon"].between(lon_min, lon_max) & df["lat"].between(lat_min, lat_max)
     return df.loc[in_range & in_space].copy(), pt_times
-
-
-
-import numpy as np
-from pathlib import Path
-from typing import List, Tuple
 
 
 def build_band_tensor_with_elevation(
