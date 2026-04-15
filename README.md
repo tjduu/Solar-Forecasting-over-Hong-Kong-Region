@@ -15,8 +15,10 @@ To resolve this challenge, we propose a continuity-aware framework based on a **
 Our framework generates physically consistent synthetic nighttime Clear Sky Index (CSI) time series from geostationary satellite observations (Himawari-8/9) and reconstructs a seamless 24-hour CSI representation. Benchmarking over Hong Kong (2021–2023) demonstrates that bridging this diurnal gap yields consistent performance gains across architectures, **reducing GHI forecasting errors by 2.1% to 26.4%** and elevating forecasting skill over persistence from 13.71% to 20.45%.
 
 <div align="center">
-  <img src="image/framework.pdf" alt="GUM Framework Architecture" width="800"/>
-  <p><i>Figure 1: Overview of the Geo-conditioned U-Net Mixture-of-Experts (GUM) framework for generating continuous 24/7 CSI tracking. (Note: Add your diagram to a `docs/` folder)</i></p>
+  <img src="images/MoE.pdf" alt="GUM Generator" width="800"/>
+  <br><br>
+  <img src="images/framework.pdf" alt="Proposed day-ahead GHI forecasting framework" width="800"/>
+  <p><i>Figure 1: Overview architecture of the Geo-conditioned U-Net Mixture-of-Experts (GUM) framework. </i></p>
 </div>
 
 > **Note on Scope:** This repository focuses strictly on the core contribution of the paper: **Data preparation, GUM model training, and Synthetic Nighttime CSI generation**. The downstream sequence-to-sequence forecasting models used for benchmarking in the paper are standard baseline architectures and are omitted here to keep the repository focused on the novel continuous-tracking framework.
@@ -41,9 +43,9 @@ The repository is structured to facilitate easy reproduction of our pipeline. Al
 │   └── utils.py                # Helper functions (tensor padding, cropping, day/night splits)
 │
 ├── tutorial/                   # Interactive notebooks demonstrating the pipeline
-│   ├── 1_prepare_raw_data.ipynb
-│   ├── 2_Train_Eval_Model(pub).ipynb
-│   └── 3_synethic_tracks(pub).ipynb
+│   ├── 1_Prepare_raw_data.ipynb
+│   ├── 2_Train_Eval_Model.ipynb
+│   └── 3_Synethic_tracks.ipynb
 │
 ├── Data/                       # Project datasets and model outputs (Ignored in Git)
 │   ├── CAMS/                   # Copernicus Atmosphere Monitoring Service irradiance data
@@ -77,7 +79,7 @@ mamba activate solar-forecasting-hk
 pip install -e .
 ```
 
-### Option B: Pip / Virtualenv (For Linux Servers without Conda)
+### Option B: Pip / Virtualenv
 ```bash
 # 1. Create and activate virtual environment (bypassing system pip limits if necessary)
 python3 -m venv .venv
@@ -95,24 +97,29 @@ pip install -e .
 The workflow is broken down into three sequential Jupyter Notebooks located in the `Tutorial Notebooks/` folder. We recommend running them in the following order to reproduce the paper's methodology:
 
 ### 1. Data Preparation & Pairing
-**Notebook:** `tutorial/1.prepare_raw_data.ipynb`
+**Notebook:** `Tutorial Notebooks/1.Prepare_raw_data.ipynb`
 * Processes raw Himawari-8/9 Long-wave Infrared (LWIR) files.
 * Segments the observations by diurnal cycles (separating strict daytime from nighttime/twilight).
 * Temporally aligns the satellite bands with ground-truth CAMS irradiance data using a robust 6-minute fuzzy matching algorithm.
 
 ### 2. GUM Model Training & Evaluation
-**Notebook:** `tutorial/2.Train_Eval_Model(pub).ipynb`
+**Notebook:** `Tutorial Notebooks/2.Train_Eval_Model.ipynb`
 * Assembles the multi-channel input tensors (combining atmospheric bands with geographic elevation maps).
 * Performs a chronologically stratified Train/Val/Test split.
 * Trains the **Geo-conditioned U-Net Mixture-of-Experts (GUM)** using the daytime dataset to learn the mapping between cloud kinematics and ground irradiance.
 * Evaluates the model comprehensively, generating standard metrics (RMSE, rRMSE, MAE, MBE, R²) partitioned by sky conditions and time-of-day.
 
 ### 3. Synthetic Nighttime Track Generation
-**Notebook:** `tutorial/3.synethic_tracks(pub).ipynb`
+**Notebook:** `Tutorial Notebooks/3.Synethic_tracks.ipynb`
 * Loads the trained GUM checkpoint and applies it in inference mode across the nocturnal and twilight satellite observations.
 * Dynamically crops and processes the outputs to generate synthetic nighttime Clear Sky Index (CSI) tensors.
 * Integrates the predicted nighttime arrays with the true daytime arrays, yielding a seamless, temporally aligned, 24-hour continuous tracking dataset ready for downstream forecasting models.
 
+<div align="center">
+  <br>
+  <img src="images/csi_syn+raw_mix.pdf" alt="Synthetic Nighttime Track Generation Sequence" width="800"/>
+  <p><i>Figure 2: Sequence demonstrating the generation and integration of synthetic nighttime CSI tracks into the continuous 24-hour timeline.</i></p>
+</div>
 ---
 
 ## 📊 Key Findings
