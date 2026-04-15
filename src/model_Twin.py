@@ -8,8 +8,8 @@ def gn(ch, groups=8):
 class FiLM(nn.Module):
     def __init__(self, ch):
         super().__init__()
-        self.gamma = nn.Conv2d(ch, ch, 1)
-        self.beta  = nn.Conv2d(ch, ch, 1)
+        self.gamma = nn.Conv2d(ch, ch, 1) # atmos
+        self.beta  = nn.Conv2d(ch, ch, 1) # geo
 
     def forward(self, x, cond):
         g = torch.tanh(self.gamma(cond))

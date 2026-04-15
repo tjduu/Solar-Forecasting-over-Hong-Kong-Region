@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-
+import pandas as pd
 from src.utils import crop_back, pad_to_32
 
 
@@ -343,12 +343,115 @@ def evaluate_csi_and_ghi(model, test_loader, device, ghi_cs_test):
         "CSI_MAE": float(mae_csi),
         "CSI_mean_true": float(mean_csi),
 
-        "GHI_RMSE": float(rmse_ghi),
+        "GHI_RMSE": float(rmse_ghi)*4,
         "GHI_rRMSE": float(rrmse_ghi),
         "GHI_R2": float(r2_ghi),
-        "GHI_MBE": float(mbe_ghi),
-        "GHI_MAE": float(mae_ghi),
-        "GHI_mean_true": float(mean_ghi),
+        "GHI_MBE": float(mbe_ghi)*4,
+        "GHI_MAE": float(mae_ghi)*4,
+        "GHI_mean_true": float(mean_ghi)*4,
     }
 
 
+@torch.no_grad()
+def evaluate_table_metrics(
+    model, 
+    loader, 
+    device, 
+    cs_ghi_full, 
+    time_mins_full, 
+    idx_eval, 
+    clear_thr=0.80, 
+    cloudy_thr=0.35, 
+    eps=1e-12
+):
+    # --- 1. Compact Helpers ---
+    def _init(): return dict(n=0, s_t=0.0, s_t2=0.0, s_err=0.0, s_abs=0.0, s_sq=0.0)
+    
+    def _upd(a, yp, yt):
+        if yt.numel() == 0: return
+        err = (yp.float() - yt.float())
+        a["n"] += err.numel(); a["s_t"] += yt.sum().item(); a["s_t2"] += (yt**2).sum().item()
+        a["s_err"] += err.sum().item(); a["s_abs"] += err.abs().sum().item(); a["s_sq"] += (err**2).sum().item()
+        
+    def _fin(a):
+        if a["n"] == 0: return {k: pd.NA for k in ["RMSE", "rRMSE (%)", "MAE", "MBE", "R2"]}
+        n, mt = a["n"], a["s_t"] / max(a["n"], 1)
+        rmse, ss_tot = (a["s_sq"] / n)**0.5, a["s_t2"] - (a["s_t"]**2) / n
+        return {
+            "RMSE": rmse, "rRMSE (%)": (rmse / mt * 100) if mt > eps else pd.NA,
+            "MAE": a["s_abs"] / n, "MBE": a["s_err"] / n,
+            "R2": 1.0 - (a["s_sq"] / max(ss_tot, eps)) if ss_tot > eps else pd.NA
+        }
+
+    cats = ["Clear sky", "Cloudy sky", "Morning (5-8)", "Day (8-16)", "Evening (16-19)", "Overall (All sky)"]
+    acc = {"CSI": {c: _init() for c in cats}, "GHI": {c: _init() for c in cats}}
+    
+    # --- 2. ULTRA-ROBUST Array Alignment ---
+    idx_eval = np.asarray(idx_eval).flatten()
+    N_test = len(idx_eval)
+    
+    # Safely handle Time array
+    time_raw = np.asarray(time_mins_full).flatten()
+    time_test = time_raw if len(time_raw) == N_test else time_raw[idx_eval]
+    
+    # Safely handle Clear-Sky array
+    cs_ghi_raw = np.asarray(cs_ghi_full)
+    cs_test = cs_ghi_raw if len(cs_ghi_raw) == N_test else cs_ghi_raw[idx_eval]
+        
+    pos = 0
+
+    # --- 3. Single Evaluation Pass ---
+    with torch.no_grad():
+        for xb, yb in loader:
+            xb, yb = xb.to(device), yb.to(device).contiguous()
+            if yb.ndim == 3: yb = yb.unsqueeze(1)
+            
+            xb_pad, h, w = pad_to_32(xb)
+            out = model(xb_pad)
+            
+            y_hat = crop_back(out[0] if isinstance(out, (tuple, list)) else out, h, w).contiguous()
+            if y_hat.ndim == 3: y_hat = y_hat.unsqueeze(1)
+
+            B = yb.shape[0]
+            
+            t_batch = time_test[pos : pos+B]
+            cs_batch = cs_test[pos : pos+B]
+            pos += B
+
+            # Arrays for Masking
+            tod = (t_batch + 8 * 60) % 1440
+            tod = tod.flatten() 
+            csi_mean = yb.mean(dim=(1,2,3)).cpu().numpy()
+
+            masks_np = {
+                "Clear sky": csi_mean >= clear_thr,
+                "Cloudy sky": csi_mean <= cloudy_thr,
+                "Morning (5-8)": (tod >= 300) & (tod < 480),
+                "Day (8-16)": (tod >= 480) & (tod < 960),
+                "Evening (16-19)": (tod >= 960) & (tod < 1140),
+                "Overall (All sky)": np.ones(B, dtype=bool)
+            }
+
+            if cs_batch.ndim == 4 and cs_batch.shape[1] == 1: cs_batch = cs_batch[:, 0]
+            cs_t = torch.from_numpy(cs_batch).to(device).unsqueeze(1).float()
+            
+            g_true, g_pred = yb * cs_t * 4.0, y_hat * cs_t * 4.0
+
+            # --- THE FIX: Force Native PyTorch Masking ---
+            for c in cats:
+                # Convert boolean numpy mask to a CUDA boolean tensor for safe slicing
+                m_tensor = torch.from_numpy(masks_np[c]).to(device)
+                
+                if m_tensor.any():
+                    _upd(acc["CSI"][c], y_hat[m_tensor], yb[m_tensor])
+                    _upd(acc["GHI"][c], g_pred[m_tensor], g_true[m_tensor])
+
+    # --- 4. Build Output DataFrame ---
+    rows = []
+    for target in ["CSI", "GHI"]:
+        for c in cats:
+            rows.append({"Target": target, "Category / Period": c, **_fin(acc[target][c])})
+            
+    df = pd.DataFrame(rows)
+    df.set_index(["Target", "Category / Period"], inplace=True)
+    return df

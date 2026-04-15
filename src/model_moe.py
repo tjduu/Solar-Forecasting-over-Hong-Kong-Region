@@ -20,12 +20,21 @@ def moe_balance(g):
     H = -(g * (g + eps).log()).sum(dim=1).mean()
     return L_bal, usage.detach(), H.detach()
 
+# def set_gate_temp(model, epoch):
+#     # sharper earlier than your previous run (which stayed too uniform)
+#     if epoch < 2:
+#         model.gate_temp = 2.0
+#     elif epoch < 6:
+#         model.gate_temp = 1.0
+#     else:
+#         model.gate_temp = 0.5
 def set_gate_temp(model, epoch):
-    # sharper earlier than your previous run (which stayed too uniform)
-    if epoch < 2:
+    if epoch < 5:
         model.gate_temp = 2.0
-    elif epoch < 6:
+    elif epoch < 20:
         model.gate_temp = 1.0
+    elif epoch < 60:
+        model.gate_temp = 0.7
     else:
         model.gate_temp = 0.5
 
@@ -379,8 +388,9 @@ def evaluate_csi_ghi(
     model,
     loader,
     device,
-    cs_ghi_full=None,        # global clear-sky GHI array, shape (T,H,W) or (T,1,H,W)
-    idx_eval=None,           # global indices aligned with loader dataset order (len = len(loader.dataset))
+    cs_ghi_full,             # REQUIRED: global clear-sky GHI array
+    hours_full,              # REQUIRED: global hours array for time-of-day metrics
+    idx_eval,                # REQUIRED: global indices aligned with loader dataset order
     clear_thr=0.80,
     cloudy_thr=0.35,
     eps=1e-12,
@@ -389,21 +399,17 @@ def evaluate_csi_ghi(
     Assumptions:
       - loader yields (xb, yb) where yb is CSI in [0,1] with shape (B,1,H,W) or (B,H,W)
       - model(x) returns y_pred in [0,1] with shape (B,1,H,W) OR (y_pred, gate)
-      - test loader should be shuffle=False if you use cs_ghi_full+idx_eval
+      - test loader should be shuffle=False to align with cs_ghi_full + idx_eval
+      - hours_full contains the hour of the day (0-23) for each index in idx_eval
     """
 
     def _init_acc():
-        return dict(
-            n=0,
-            sum_true=0.0,
-            sum_true2=0.0,
-            sum_err=0.0,
-            sum_abs_err=0.0,
-            sum_sq_err=0.0,
-        )
+        return dict(n=0, sum_true=0.0, sum_true2=0.0, sum_err=0.0, sum_abs_err=0.0, sum_sq_err=0.0)
 
     def _update(acc, y_pred, y_true):
-        # y_pred/y_true: torch tensors, any shape
+        if y_true.numel() == 0:
+            return  
+        
         y_true = y_true.float()
         y_pred = y_pred.float()
         err = (y_pred - y_true)
@@ -416,43 +422,46 @@ def evaluate_csi_ghi(
         acc["sum_sq_err"] += (err * err).sum().item()
 
     def _finalize(acc):
-        n = max(acc["n"], 1)
+        if acc["n"] == 0:
+            return {"RMSE": float("nan"), "rRMSE (%)": float("nan"), 
+                    "MAE": float("nan"), "MBE": float("nan"), "R2": float("nan")}
+
+        n = acc["n"]
         mean_true = acc["sum_true"] / n
         rmse = (acc["sum_sq_err"] / n) ** 0.5
         mae = acc["sum_abs_err"] / n
         mbe = acc["sum_err"] / n
-
+        
+        rrmse = (rmse / mean_true * 100) if mean_true > eps else float("nan")
         ss_tot = acc["sum_true2"] - (acc["sum_true"] ** 2) / n
         r2 = 1.0 - (acc["sum_sq_err"] / max(ss_tot, eps)) if ss_tot > eps else float("nan")
 
         return {
             "RMSE": float(rmse),
+            "rRMSE (%)": float(rrmse),
             "MAE": float(mae),
             "MBE": float(mbe),
-            "R2": float(r2),
-            "mean_true": float(mean_true),
-            "n_pixels": int(acc["n"]),
+            "R2": float(r2)
         }
 
-    # accumulators
-    csi_all = _init_acc()
+    # --- Initialize Accumulators ---
+    csi_overall = _init_acc(); csi_clear = _init_acc(); csi_cloudy = _init_acc()
+    csi_morning = _init_acc(); csi_day = _init_acc();   csi_evening = _init_acc()
 
-    ghi_all = _init_acc()          # only if cs_ghi_full provided
-    ghi_clear = _init_acc()
-    ghi_cloudy = _init_acc()
+    ghi_overall = _init_acc(); ghi_clear = _init_acc(); ghi_cloudy = _init_acc()
+    ghi_morning = _init_acc(); ghi_day = _init_acc();   ghi_evening = _init_acc()
 
-    have_ghi = (cs_ghi_full is not None) and (idx_eval is not None)
-    if have_ghi:
-        idx_eval = np.asarray(idx_eval)
+    idx_eval = np.asarray(idx_eval)
+    hours_full = np.asarray(hours_full)
 
     model.eval()
-    pos = 0  # position in idx_eval (dataset order)
+    pos = 0  
 
     for xb, yb in loader:
         xb = xb.to(device)
         yb = yb.to(device).contiguous()
         if yb.ndim == 3:
-            yb = yb.unsqueeze(1)  # (B,1,H,W)
+            yb = yb.unsqueeze(1)  
 
         xb_pad, h, w = pad_to_32(xb)
 
@@ -463,55 +472,68 @@ def evaluate_csi_ghi(
             y_hat = out
 
         y_hat = crop_back(y_hat, h, w).contiguous()
-        # y_hat should be (B,1,H,W)
         if y_hat.ndim == 3:
             y_hat = y_hat.unsqueeze(1)
 
-        # --- CSI metrics (pixel-level) ---
-        _update(csi_all, y_hat, yb)
+        B = yb.shape[0]
+        gidx = idx_eval[pos:pos + B]
+        pos += B
 
-        # --- GHI metrics if provided ---
-        if have_ghi:
-            B = yb.shape[0]
-            gidx = idx_eval[pos:pos + B]
-            pos += B
+        # --- Sub-category Masks ---
+        hours = hours_full[gidx] 
+        mask_morning = (hours >= 5) & (hours < 8)
+        mask_day = (hours >= 8) & (hours < 16)
+        mask_evening = (hours >= 16) & (hours < 19)
 
-            cs = np.asarray(cs_ghi_full[gidx])  # (B,H,W) or (B,1,H,W)
-            if cs.ndim == 4 and cs.shape[1] == 1:
-                cs = cs[:, 0]  # (B,H,W)
+        csi_mean = yb.mean(dim=(1,2,3)).cpu().numpy()  
+        mask_clear = (csi_mean >= clear_thr)
+        mask_cloudy = (csi_mean <= cloudy_thr)
 
-            cs_t = torch.from_numpy(cs).to(device).unsqueeze(1).float()  # (B,1,H,W)
+        # --- CSI Updates ---
+        _update(csi_overall, y_hat, yb)
+        if mask_clear.any():   _update(csi_clear, y_hat[mask_clear], yb[mask_clear])
+        if mask_cloudy.any():  _update(csi_cloudy, y_hat[mask_cloudy], yb[mask_cloudy])
+        if mask_morning.any(): _update(csi_morning, y_hat[mask_morning], yb[mask_morning])
+        if mask_day.any():     _update(csi_day, y_hat[mask_day], yb[mask_day])
+        if mask_evening.any(): _update(csi_evening, y_hat[mask_evening], yb[mask_evening])
 
-            ghi_true = yb * cs_t
-            ghi_pred = y_hat * cs_t
+        # --- GHI Calculations (Scaled by 4.0 for 15-min intervals) ---
+        cs = np.asarray(cs_ghi_full[gidx])
+        if cs.ndim == 4 and cs.shape[1] == 1:
+            cs = cs[:, 0]
 
-            _update(ghi_all, ghi_pred, ghi_true)
+        cs_t = torch.from_numpy(cs).to(device).unsqueeze(1).float()
+        
+        ghi_true = yb * cs_t * 4.0
+        ghi_pred = y_hat * cs_t * 4.0
 
-            # regime by sample mean CSI_true
-            csi_mean = yb.mean(dim=(1,2,3))  # (B,)
-            clear_mask = (csi_mean >= clear_thr)
-            cloudy_mask = (csi_mean <= cloudy_thr)
+        # --- GHI Updates ---
+        _update(ghi_overall, ghi_pred, ghi_true)
+        if mask_clear.any():   _update(ghi_clear, ghi_pred[mask_clear], ghi_true[mask_clear])
+        if mask_cloudy.any():  _update(ghi_cloudy, ghi_pred[mask_cloudy], ghi_true[mask_cloudy])
+        if mask_morning.any(): _update(ghi_morning, ghi_pred[mask_morning], ghi_true[mask_morning])
+        if mask_day.any():     _update(ghi_day, ghi_pred[mask_day], ghi_true[mask_day])
+        if mask_evening.any(): _update(ghi_evening, ghi_pred[mask_evening], ghi_true[mask_evening])
 
-            if clear_mask.any():
-                _update(ghi_clear, ghi_pred[clear_mask], ghi_true[clear_mask])
-            if cloudy_mask.any():
-                _update(ghi_cloudy, ghi_pred[cloudy_mask], ghi_true[cloudy_mask])
-
-    # build output
+    # --- Build Full Output Dictionary ---
     out = {
-        "CSI": _finalize(csi_all),
+        "CSI": {
+            "Clear sky": _finalize(csi_clear),
+            "Cloudy sky": _finalize(csi_cloudy),
+            "Morning (5-8)": _finalize(csi_morning),
+            "Day (8-16)": _finalize(csi_day),
+            "Evening (16-19)": _finalize(csi_evening),
+            "Overall (All sky)": _finalize(csi_overall),
+        },
+        "GHI": {
+            "Clear sky": _finalize(ghi_clear),
+            "Cloudy sky": _finalize(ghi_cloudy),
+            "Morning (5-8)": _finalize(ghi_morning),
+            "Day (8-16)": _finalize(ghi_day),
+            "Evening (16-19)": _finalize(ghi_evening),
+            "Overall (All sky)": _finalize(ghi_overall),
+        }
     }
 
-    if have_ghi:
-        out["GHI"] = _finalize(ghi_all)
-        out["GHI_clear"] = _finalize(ghi_clear)  # clear-sky samples only
-        out["GHI_cloudy"] = _finalize(ghi_cloudy)
-
-        # helpful counts
-        out["meta"] = {
-            "clear_thr": float(clear_thr),
-            "cloudy_thr": float(cloudy_thr),
-            "note": "clear/cloudy are defined by sample mean(CSI_true) thresholds",
-        }
-
     return out
+
