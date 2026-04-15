@@ -15,7 +15,7 @@ To resolve this challenge, we propose a continuity-aware framework based on a **
 Our framework generates physically consistent synthetic nighttime Clear Sky Index (CSI) time series from geostationary satellite observations (Himawari-8/9) and reconstructs a seamless 24-hour CSI representation. Benchmarking over Hong Kong (2021–2023) demonstrates that bridging this diurnal gap yields consistent performance gains across architectures, **reducing GHI forecasting errors by 2.1% to 26.4%** and elevating forecasting skill over persistence from 13.71% to 20.45%.
 
 <div align="center">
-  <img src="images/MoE.jpf" alt="GUM Generator" width="800"/>
+  <img src="images/MoE.jpg" alt="GUM Generator" width="800"/>
   <br><br>
   <img src="images/framework.jpg" alt="Proposed day-ahead GHI forecasting framework" width="800"/>
   <p><i>Figure 1: Overview architecture of the Geo-conditioned U-Net Mixture-of-Experts (GUM) framework. </i></p>
@@ -42,7 +42,7 @@ The repository is structured to facilitate easy reproduction of our pipeline. Al
 │   ├── train.py                # Training loops, learning rate scheduling, and checkpoints
 │   └── utils.py                # Helper functions (tensor padding, cropping, day/night splits)
 │
-├── tutorial/                   # Interactive notebooks demonstrating the pipeline
+├── Tutorial Notebooks/                   # Interactive notebooks demonstrating the pipeline
 │   ├── 1_Prepare_raw_data.ipynb
 │   ├── 2_Train_Eval_Model.ipynb
 │   └── 3_Synethic_tracks.ipynb
