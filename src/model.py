@@ -1,156 +1,241 @@
-# src/model.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class NeighborAggGNN(nn.Module):
+
+def gn(ch: int, groups: int = 8) -> nn.GroupNorm:
+    return nn.GroupNorm(num_groups=min(groups, ch), num_channels=ch)
+
+
+class FiLM(nn.Module):
     """
-    Attention aggregation (replaces plain mean):
-      - Edge messages: MLP([x_src, dlon, dlat, dist])
-      - Attention logits per edge: score( [x_src, geom] ) + radial(-(dist/sigma)^2 )
-      - Softmax over edges that land on the same target node
-      - Weighted sum -> target embedding -> scalar CSI
-      - Optional nearest-source residual to sharpen details
+    Feature-wise Linear Modulation (FiLM) layer.
+    Modulates input features (e.g., atmospheric data) using conditioning features (e.g., geometric data).
     """
-    def __init__(self, in_src: int = 15, edge_dim: int = 3, hidden: int = 128,
-                 attn_dropout: float = 0.0, use_nearest_residual: bool = True):
+    def __init__(self, ch: int):
+        """
+        Args:
+            ch (int): Number of input and output channels.
+        """
         super().__init__()
-        self.use_nearest_residual = bool(use_nearest_residual)
-        self.attn_dropout = float(attn_dropout)
+        self.gamma = nn.Conv2d(ch, ch, 1)  # atmos
+        self.beta = nn.Conv2d(ch, ch, 1)   # geo
 
-        f_in = in_src + edge_dim
+    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+        """
+        Applies the FiLM modulation.
 
-        # message MLP
-        self.msg = nn.Sequential(
-            nn.Linear(f_in, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, hidden),
-            nn.GELU(),
-        )
+        Args:
+            x (torch.Tensor): The primary feature tensor to be modulated.
+            cond (torch.Tensor): The conditioning feature tensor.
 
-        # attention score from content + geometry
-        self.edge_score = nn.Sequential(
-            nn.Linear(f_in, hidden // 2),
-            nn.GELU(),
-            nn.Linear(hidden // 2, 1)  # content score
-        )
+        Returns:
+            torch.Tensor: The modulated feature tensor.
+        """
+        g = torch.tanh(self.gamma(cond))
+        b = self.beta(cond)
+        return x * (1.0 + g) + b
 
-        # learnable distance scale sigma > 0 (Softplus)
-        self.sigma_head = nn.Sequential(
-            nn.Linear(f_in, 1),
-            nn.Softplus(beta=1.0)  # ensures positive
-        )
 
-        # readout on aggregated message
-        self.readout = nn.Sequential(
-            nn.Linear(hidden, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, 1)
-        )
+class ResBlockGN(nn.Module):
+    """
+    A Residual Block utilizing 3x3 convolutions, Group Normalization, and GELU activation.
+    """
+    def __init__(self, ch: int):
+        """
+        Args:
+            ch (int): Number of input and output channels.
+        """
+        super().__init__()
+        self.c1 = nn.Conv2d(ch, ch, 3, padding=1, bias=False)
+        self.n1 = gn(ch)
+        self.c2 = nn.Conv2d(ch, ch, 3, padding=1, bias=False)
+        self.n2 = gn(ch)
+        self.act = nn.GELU()
 
-        # optional residual from the nearest source pixel (keeps edges sharp)
-        if self.use_nearest_residual:
-            self.nearest_head = nn.Sequential(
-                nn.Linear(in_src, hidden),
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Performs the forward pass with a residual connection.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor after applying residual block operations.
+        """
+        h = self.act(self.n1(self.c1(x)))
+        h = self.n2(self.c2(h))
+        return self.act(x + h)
+
+
+class ExpertHead(nn.Module):
+    """
+    A convolutional head representing a single 'expert' for prediction.
+    Supports standard or dilated convolutions for varying receptive fields.
+    """
+    def __init__(self, ch: int, dilate: bool = False):
+        """
+        Args:
+            ch (int): Number of input channels.
+            dilate (bool): If True, uses dilated convolutions (e.g., for a global expert).
+        """
+        super().__init__()
+        if not dilate:
+            self.body = nn.Sequential(
+                ResBlockGN(ch),
+                nn.Conv2d(ch, ch, 3, padding=1, bias=False),
+                gn(ch),
                 nn.GELU(),
-                nn.Linear(hidden, 1)
             )
+        else:
+            self.body = nn.Sequential(
+                ResBlockGN(ch),
+                nn.Conv2d(ch, ch, 3, padding=2, dilation=2, bias=False),
+                gn(ch),
+                nn.GELU(),
+            )
+        self.out = nn.Conv2d(ch, 1, 1)
 
-    def forward(self, x_src, edge_index, edge_attr, Nt):
+    def forward(self, f: torch.Tensor) -> torch.Tensor:
         """
-        x_src:     (M, in_src)
-        edge_index:(2, E)  [src_idx, tgt_idx]
-        edge_attr: (E, edge_dim) = [dlon, dlat, dist]
-        Nt:        number of target nodes
-        returns:   (Nt,)
+        Computes the expert logits.
+
+        Args:
+            f (torch.Tensor): Input feature tensor.
+
+        Returns:
+            torch.Tensor: Logit predictions from this expert.
         """
-        src, tgt = edge_index.long()                # (E,), (E,)
-        xs   = x_src[src]                           # (E, in_src)
-        feat = torch.cat([xs, edge_attr], dim=-1)   # (E, in_src + edge_dim)
-
-        # messages per edge
-        m = self.msg(feat)                          # (E, hidden)
-
-        # attention logits = content score + radial distance term
-        score = self.edge_score(feat).squeeze(-1)   # (E,)
-        dist  = edge_attr[:, 2:3].clamp_min(1e-6)   # (E,1)
-        sigma = self.sigma_head(feat).clamp_min(1e-3) # (E,1)
-        radial = - (dist / sigma) ** 2              # (E,1)
-        logits = score + radial.squeeze(-1)         # (E,)
-
-        # stable softmax per target index
-        # 1) subtract max per target
-        max_buf = torch.full((Nt,), -1e9, device=logits.device)
-        # requires PyTorch >= 2.0
-        max_buf.index_reduce_(0, tgt, logits, reduce='amax')
-        logits = logits - max_buf[tgt]
-
-        # 2) exponentiate and normalize per target
-        w = torch.exp(logits)
-        if self.attn_dropout > 0:
-            w = F.dropout(w, p=self.attn_dropout, training=self.training)
-        denom = torch.zeros((Nt,), device=w.device)
-        denom.index_add_(0, tgt, w)
-        w = w / (denom[tgt] + 1e-8)                 # (E,)
-
-        # weighted aggregation
-        m_weighted = m * w.unsqueeze(-1)            # (E, hidden)
-        z_tgt = torch.zeros((Nt, m.size(-1)), device=m.device)
-        z_tgt.index_add_(0, tgt, m_weighted)        # (Nt, hidden)
-
-        y_hat = self.readout(z_tgt).squeeze(-1)     # (Nt,)
-
-        # nearest-source residual (optional)
-        if self.use_nearest_residual:
-            dflat = dist.squeeze(-1)                # (E,)
-            # min distance per target
-            min_buf = torch.full((Nt,), float('inf'), device=dflat.device)
-            min_buf.index_reduce_(0, tgt, dflat, reduce='amin')  # (Nt,)
-            is_nearest = dflat <= (min_buf[tgt] + 1e-12)
-
-            # map each target to features of one nearest edge (ties: last wins)
-            nn_x = torch.zeros((Nt, x_src.size(1)), device=x_src.device)
-            nn_x.index_copy_(0, tgt[is_nearest], xs[is_nearest])
-            y_hat = y_hat + self.nearest_head(nn_x).squeeze(-1)  # (Nt,)
-
-        return y_hat
+        return self.out(self.body(f))  # logits
 
 
+class GUM(nn.Module):
+    """
+    Geo-conditional U-Net Mixture-of-Experts (GUM).
+    An encoder-decoder architecture that fuses atmospheric and geometric inputs using FiLM,
+    and utilizes a spatial gating mechanism to blend predictions from multiple experts.
+    """
+    def __init__(self, feature_size: int = 64, K: int = 2, gate_temp: float = 2.0):
+        """
+        Args:
+            feature_size (int): Base number of channels for intermediate features.
+            K (int): Number of experts to blend.
+            gate_temp (float): Temperature parameter for the softmax gating.
+        """
+        super().__init__()
+        self.K = K
+        self.gate_temp = float(gate_temp)
 
-# import torch
-# import torch.nn as nn
+        # stems
+        self.enc_atmos = nn.Sequential(
+            nn.Conv2d(9, feature_size, 3, padding=1, bias=False),
+            gn(feature_size),
+            nn.GELU(),
+            ResBlockGN(feature_size),
+        )
+        
+        self.enc_geo = nn.Sequential(
+            nn.Conv2d(3, feature_size, 3, padding=1, bias=False),
+            gn(feature_size),
+            nn.GELU(),
+            ResBlockGN(feature_size),
+        )
+        
+        self.film = FiLM(feature_size)
 
-# class NeighborAggGNN(nn.Module):
-#     """
-#     Messages: m = MLP([x_src, edge_attr])
-#     Aggregate: mean over neighbors -> z_tgt
-#     Predict: y_hat = MLP2(z_tgt)
-#     """
-#     def __init__(self, in_src=15, edge_dim=3, hidden=128):
-#         super().__init__()
-#         self.msg = nn.Sequential(
-#             nn.Linear(in_src + edge_dim, hidden),
-#             nn.ReLU(inplace=True),
-#             nn.Linear(hidden, hidden),
-#             nn.ReLU(inplace=True)
-#         )
-#         self.readout = nn.Sequential(
-#             nn.Linear(hidden, hidden),
-#             nn.ReLU(inplace=True),
-#             nn.Linear(hidden, 1)
-#         )
+        # trunk
+        self.down1 = nn.Sequential(
+            nn.Conv2d(feature_size, feature_size * 2, 3, stride=2, padding=1, bias=False),
+            gn(feature_size * 2),
+            nn.GELU(),
+            ResBlockGN(feature_size * 2),
+        )
+        
+        self.down2 = nn.Sequential(
+            nn.Conv2d(feature_size * 2, feature_size * 4, 3, stride=2, padding=1, bias=False),
+            gn(feature_size * 4),
+            nn.GELU(),
+            ResBlockGN(feature_size * 4),
+        )
 
-#     def forward(self, x_src, edge_index, edge_attr, Nt):
-#         src, tgt = edge_index   # (E,), (E,)
-#         x_s = x_src[src]                        # (E, in_src)
-#         m_in = torch.cat([x_s, edge_attr], dim=-1)  # (E, in_src+edge_dim)
-#         m = self.msg(m_in)                      # (E, hidden)
+        self.up2 = nn.Sequential(
+            nn.Conv2d(feature_size * 4, feature_size * 2, 3, padding=1, bias=False),
+            gn(feature_size * 2),
+            nn.GELU(),
+            ResBlockGN(feature_size * 2),
+        )
+        
+        self.fuse_h2 = nn.Sequential(
+            nn.Conv2d(feature_size * 4, feature_size * 2, 1, bias=False),
+            gn(feature_size * 2),
+            nn.GELU(),
+            ResBlockGN(feature_size * 2),
+        )
 
-#         z = torch.zeros((Nt, m.size(-1)), device=m.device)
-#         cnt = torch.zeros((Nt, 1), device=m.device)
-#         z.index_add_(0, tgt, m)
-#         cnt.index_add_(0, tgt, torch.ones_like(tgt, dtype=torch.float32).unsqueeze(-1))
-#         z = z / cnt.clamp_min_(1.0)
+        self.up1 = nn.Sequential(
+            nn.Conv2d(feature_size * 2, feature_size, 3, padding=1, bias=False),
+            gn(feature_size),
+            nn.GELU(),
+            ResBlockGN(feature_size),
+        )
+        
+        self.fuse = nn.Sequential(
+            nn.Conv2d(feature_size * 2, feature_size, 1, bias=False),
+            gn(feature_size),
+            nn.GELU(),
+            ResBlockGN(feature_size),
+        )
 
-#         y_hat = self.readout(z).squeeze(-1)
-#         return y_hat
+        # experts (local, global)
+        self.experts = nn.ModuleList([
+            ExpertHead(feature_size, dilate=False),  # expert 0 local
+            ExpertHead(feature_size, dilate=True),   # expert 1 global
+        ])
+
+        # spatial gate from low1_fused (H/2,W/2), upsample to H,W
+        self.gate = nn.Sequential(
+            nn.Conv2d(feature_size * 2, feature_size, 3, padding=1, bias=False),
+            gn(feature_size),
+            nn.GELU(),
+            nn.Conv2d(feature_size, K, 1),  # gate logits
+        )
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass of the GUM architecture.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (B, 12, H, W), where the first 9 channels
+                              are atmospheric features and the last 3 are geometric features.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 
+                - y: The final blended prediction tensor of shape (B, 1, H, W) in range [0, 1].
+                - g: The softmax gate weights used for blending, shape (B, K, H, W).
+        """
+        atmos = self.enc_atmos(x[:, :9])
+        geo = self.enc_geo(x[:, 9:])
+        fused = self.film(atmos, geo)                     # (B,F,H,W)
+
+        low1 = self.down1(fused)                          # (B,2F,H/2,W/2)
+        low2 = self.down2(low1)                           # (B,4F,H/4,W/4)
+
+        up2 = F.interpolate(low2, size=low1.shape[-2:], mode="bilinear", align_corners=False)
+        up2 = self.up2(up2)                               # (B,2F,H/2,W/2)
+        low1_fused = self.fuse_h2(torch.cat([low1, up2], dim=1))
+
+        up1 = F.interpolate(low1_fused, size=fused.shape[-2:], mode="bilinear", align_corners=False)
+        up1 = self.up1(up1)                               # (B,F,H,W)
+        f = self.fuse(torch.cat([fused, up1], dim=1))     # (B,F,H,W)
+
+        # experts logits (B,K,1,H,W)
+        expert_logits = torch.stack([e(f) for e in self.experts], dim=1)
+
+        # gate weights (B,K,H,W)
+        g_logits = self.gate(low1_fused)                  # (B,K,H/2,W/2)
+        g_logits = F.interpolate(g_logits, size=f.shape[-2:], mode="bilinear", align_corners=False)
+        g = F.softmax(g_logits / max(self.gate_temp, 1e-6), dim=1)
+
+        mixed_logits = (g.unsqueeze(2) * expert_logits).sum(dim=1)  # (B,1,H,W)
+        y = torch.sigmoid(mixed_logits)
+        return y, g

@@ -5,7 +5,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.dataset import BandsCamsDataset
-from src.model_Twin import TwinFiLMUNetTiny_SpatialMoE
+from src.model import TwinFiLMUNetTiny_SpatialMoE
 from src.model_moe import train_moe_easy, evaluate_csi_ghi
 
 
