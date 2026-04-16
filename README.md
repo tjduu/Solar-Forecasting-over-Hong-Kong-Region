@@ -27,7 +27,7 @@ Our framework generates physically consistent synthetic nighttime Clear Sky Inde
 
 ## 📂 Repository Structure
 
-The repository is structured to facilitate easy reproduction of our pipeline. All core logic resides in `src/`, while step-by-step interactive demonstrations are provided in the `tutorial/` directory.
+The repository is structured to facilitate easy reproduction of our pipeline. All core logic resides in `src/`, while step-by-step interactive demonstrations are provided in the `Tutorial Notebooks/` directory.
 
 ```text
 ├── src/                        # Core Python modules for the GUM pipeline
@@ -64,11 +64,6 @@ The repository is structured to facilitate easy reproduction of our pipeline. Al
 ---
 
 ## ⚙️ Environment Setup
-
-To ensure the `tutorial` notebooks can seamlessly import the `src` modules regardless of your working directory, the repository is configured to be installed as a local package.
-
-Pick **one** of the following workflow environments:
-
 ### Option A: Conda (Recommended)
 ```bash
 # 1. Create and activate the environment
@@ -81,7 +76,7 @@ pip install -e .
 
 ### Option B: Pip / Virtualenv
 ```bash
-# 1. Create and activate virtual environment (bypassing system pip limits if necessary)
+# 1. Create and activate virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
