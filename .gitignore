@@ -2,3 +2,10 @@ venv/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+Data/*
+*.gif
+*.png
+*.pdf
+solar_forecasting_hk.egg-info/*
+log/*
+runs_stage1/*
